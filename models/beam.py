@@ -1,5 +1,5 @@
 from __future__ import division
-
+import utils.Constants as Constants
 # Class for managing the internals of the beam search process.
 #
 #
@@ -31,8 +31,8 @@ class Beam(object):
         self.prevKs = []
 
         # The outputs at each time-step.
-        self.nextYs = [self.tt.LongTensor(size).fill_(utils.Constants.PAD)]
-        self.nextYs[0][0] = utils.Constants.BOS
+        self.nextYs = [self.tt.LongTensor(size).fill_(Constants.PAD)]
+        self.nextYs[0][0] = Constants.BOS
 
         # The attentions (matrix) for each time.
         self.attn = []
@@ -59,16 +59,16 @@ class Beam(object):
         numWords = wordLk.size(1)
         # self.length += 1  # TODO: some is finished so do not acc length for them
         if len(self.prevKs) > 0:
-            finish_index = self.nextYs[-1].eq(utils.Constants.EOS)
+            finish_index = self.nextYs[-1].eq(Constants.EOS)
             if any(finish_index):
                 wordLk.masked_fill_(finish_index.unsqueeze(1).expand_as(wordLk), -float('inf'))
                 for i in range(self.size):
-                    if self.nextYs[-1][i] == utils.Constants.EOS:
-                        wordLk[i][utils.Constants.EOS] = 0
+                    if self.nextYs[-1][i] == Constants.EOS:
+                        wordLk[i][Constants.EOS] = 0
             # set up the current step length
             cur_length = self.all_length[-1]
             for i in range(self.size):
-                cur_length[i] += 0 if self.nextYs[-1][i] == utils.Constants.EOS else 1
+                cur_length[i] += 0 if self.nextYs[-1][i] == Constants.EOS else 1
         # Sum the previous scores.
         if len(self.prevKs) > 0:
             prev_score = self.all_scores[-1]
@@ -99,7 +99,7 @@ class Beam(object):
         self.attn.append(attnOut.index_select(0, prevK))
 
         # End condition is when every one is EOS.
-        if all(self.nextYs[-1].eq(utils.Constants.EOS)):
+        if all(self.nextYs[-1].eq(Constants.EOS)):
             self.done = True
 
         return self.done
