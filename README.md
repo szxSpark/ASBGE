@@ -1,2 +1,2 @@
-# Abstractive Summarization Based on Global Encoding 
-
+# GFEs2s
+Abstractive Summarization Based on Global Features of Encoding
