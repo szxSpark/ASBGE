@@ -1,14 +1,7 @@
 import logging
-import torch
-import models
 import re
 from PyRouge.Rouge import Rouge
 from PerlRouge.utils import compute_rouge
-import copy
-try:
-    import ipdb
-except ImportError:
-    pass
 
 report_every = 1000
 

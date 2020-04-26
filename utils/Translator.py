@@ -1,13 +1,10 @@
-import models
 import torch.nn as nn
 import torch
 from torch.autograd import Variable
 import copy
 import utils.Constants as Constants
-try:
-    import ipdb
-except ImportError:
-    pass
+from models import Encoder, Decoder, DecInit, NMTModel, Beam
+from utils.Dataset import Dataset
 
 class Translator(object):
     def __init__(self, opt, model=None, dataset=None):
@@ -23,10 +20,10 @@ class Translator(object):
 
             self.enc_rnn_size = model_opt.enc_rnn_size
             self.dec_rnn_size = model_opt.dec_rnn_size
-            encoder = models.Models.Encoder(model_opt, self.src_dict)
-            decoder = models.Models.Decoder(model_opt, self.tgt_dict)
-            decIniter = models.Models.DecInit(model_opt)
-            model = models.Models.NMTModel(encoder, decoder, decIniter)
+            encoder = Encoder(model_opt, self.src_dict)
+            decoder = Decoder(model_opt, self.tgt_dict)
+            decIniter = DecInit(model_opt)
+            model = NMTModel(encoder, decoder, decIniter)
 
             generator = nn.Sequential(
                 nn.Linear(model_opt.dec_rnn_size // model_opt.maxout_pool_size, self.tgt_dict.size()),
@@ -104,7 +101,7 @@ class Translator(object):
                 'src_extend_vocab': src_extend_vocab,
                 'src_oovs_list': src_oovs_list,
             }
-        return models.Dataset(train, self.opt.batch_size, self.opt.cuda, volatile=True, pointer_gen=self.opt.pointer_gen, is_coverage=self.opt.is_coverage)
+        return Dataset(train, self.opt.batch_size, self.opt.cuda, volatile=True, pointer_gen=self.opt.pointer_gen, is_coverage=self.opt.is_coverage)
 
     def buildTargetTokens(self, pred, src, attn):
         tokens = self.tgt_dict.convertToLabels(pred, Constants.EOS)
@@ -182,7 +179,7 @@ class Translator(object):
         att_vec = self.model.make_init_att(context)
         padMask = srcBatch_0.eq(Constants.PAD).transpose(0, 1).unsqueeze(0).repeat(beamSize, 1, 1).float()
 
-        beam = [models.Beam(beamSize, self.opt.cuda) for k in range(batchSize)]
+        beam = [Beam(beamSize, self.opt.cuda) for k in range(batchSize)]
         batchIdx = list(range(batchSize))
         remainingSents = batchSize
         tmp_src_batch_5 = copy.deepcopy(srcBatch[5])  # L, B

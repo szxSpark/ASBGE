@@ -1,24 +1,18 @@
 import logging
 import torch
-import models
 import re
-
-try:
-    import ipdb
-except ImportError:
-    pass
+import utils.Constants as Constants
+from utils.Dict import Dict
 
 lower = True
 seq_length = None  # english
 report_every = 1000
 shuffle = 1
-
-
 logger = logging.getLogger(__name__)
 
 def makeVocabulary(filenames, size):
-    vocab = models.Dict([utils.Constants.PAD_WORD, utils.Constants.UNK_WORD,
-                         utils.Constants.BOS_WORD, utils.Constants.EOS_WORD], lower=lower)
+    vocab = Dict([Constants.PAD_WORD, Constants.UNK_WORD,
+                         Constants.BOS_WORD, Constants.EOS_WORD], lower=lower)
     for filename in filenames:
         with open(filename, encoding='utf-8') as f:
             for sent in f.readlines():
@@ -38,7 +32,7 @@ def initVocabulary(name, dataFiles, vocabFile, vocabSize):
     if vocabFile is not None:
         # If given, load existing word dictionary.
         logger.info('Reading ' + name + ' vocabulary from \'' + vocabFile + '\'...')
-        vocab = models.Dict()
+        vocab = Dict()
         vocab.loadFile(vocabFile)
         logger.info('Loaded ' + str(vocab.size()) + ' ' + name + ' words')
 
@@ -60,7 +54,7 @@ def saveVocabulary(name, vocab, file):
 def article2ids(article_words, vocab):
     ids = []
     oovs = []
-    unk_id = vocab.lookup(utils.Constants.UNK_WORD)
+    unk_id = vocab.lookup(Constants.UNK_WORD)
     for w in article_words:
         i = vocab.lookup(w, unk_id)  # 查不到默认unk
         if i == unk_id:  # oov
@@ -75,7 +69,7 @@ def article2ids(article_words, vocab):
 
 def abstract2ids(abstract_words, vocab, article_oovs):
     ids = []
-    unk_id = vocab.lookup(utils.Constants.UNK_WORD)
+    unk_id = vocab.lookup(Constants.UNK_WORD)
     for w in abstract_words:
         i = vocab.lookup(w, unk_id)  # 查不到默认unk
         if i == unk_id:  # If w is an OOV word
@@ -140,11 +134,11 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts, pointer_gen=False):
         if True:
             # TODO 截断
             src += [srcDicts.convertToIdx(srcWords,
-                                          utils.Constants.UNK_WORD)]  # [Tensor]
+                                          Constants.UNK_WORD)]  # [Tensor]
             tgt += [tgtDicts.convertToIdx(tgtWords,
-                                          utils.Constants.UNK_WORD,
-                                          utils.Constants.BOS_WORD,
-                                          utils.Constants.EOS_WORD)]  # 添加特殊token
+                                          Constants.UNK_WORD,
+                                          Constants.BOS_WORD,
+                                          Constants.EOS_WORD)]  # 添加特殊token
             sizes += [len(srcWords)]
 
 
@@ -154,9 +148,9 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts, pointer_gen=False):
                 abs_ids_extend_vocab = abstract2ids(tgtWords, tgtDicts, article_oovs)
                 # 覆盖target，用于使用临时词典
                 vec = []
-                vec += [srcDicts.lookup(utils.Constants.BOS_WORD)]
+                vec += [srcDicts.lookup(Constants.BOS_WORD)]
                 vec += abs_ids_extend_vocab
-                vec += [srcDicts.lookup(utils.Constants.EOS_WORD)]
+                vec += [srcDicts.lookup(Constants.EOS_WORD)]
                 src_extend_vocab += [enc_input_extend_vocab]
                 src_oovs_list += [article_oovs]
                 tgt_extend_vocab.append(torch.LongTensor(vec))

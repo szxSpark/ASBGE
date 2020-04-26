@@ -2,8 +2,7 @@ from __future__ import division
 import argparse
 import torch
 import torch.nn as nn
-from models import Optim, NMTModel, Encoder, Decoder
-from models.modules.DecInit import DecInit
+from models import Optim, NMTModel, Encoder, Decoder, DecInit
 from torch import cuda
 import math
 import time
