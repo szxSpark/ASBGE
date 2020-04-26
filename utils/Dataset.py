@@ -1,6 +1,8 @@
 from __future__ import division
 import math
 import torch
+import utils.Constants as Constants
+
 
 class Dataset(object):
     def __init__(self, dataset, batchSize, cuda, volatile=False, pointer_gen=False, is_coverage=False):
@@ -44,7 +46,7 @@ class Dataset(object):
                 article_oovs = self.src_oovs_list[start_idx:end_idx]
                 max_art_oovs = max([len(_article_oovs) for _article_oovs in article_oovs])  # 最长的oovs长度
                 src_extend_vocab = self.src_extend_vocab[start_idx:end_idx]
-                enc_batch_extend_vocab = data[0].new(len(data), max_length).fill_(utils.Constants.PAD)
+                enc_batch_extend_vocab = data[0].new(len(data), max_length).fill_(Constants.PAD)
                 for i in range(len(data)):
                     data_length = data[i].size(0)
                     offset = max_length - data_length if align_right else 0
@@ -53,7 +55,7 @@ class Dataset(object):
                     extra_zeros = torch.zeros((self.batchSize, max_art_oovs))
             else:  # tgt
                 tgt_extend_vocab = self.tgt_extend_vocab[start_idx:end_idx]
-                dec_batch_extend_vocab = data[0].new(len(data), max_length).fill_(utils.Constants.PAD)
+                dec_batch_extend_vocab = data[0].new(len(data), max_length).fill_(Constants.PAD)
                 for i in range(len(data)):
                     data_length = data[i].size(0)
                     offset = max_length - data_length if align_right else 0
@@ -63,7 +65,7 @@ class Dataset(object):
         if self.is_coverage:
             coverage = torch.zeros(len(data), max_length)
 
-        out = data[0].new(len(data), max_length).fill_(utils.Constants.PAD)
+        out = data[0].new(len(data), max_length).fill_(Constants.PAD)
         for i in range(len(data)):
             data_length = data[i].size(0)
             offset = max_length - data_length if align_right else 0

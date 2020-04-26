@@ -2,11 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-try:
-    import ipdb
-except ImportError:
-    pass
-
 class ConcatAttention(nn.Module):
     def __init__(self, attend_dim, query_dim, att_dim):
         super(ConcatAttention, self).__init__()

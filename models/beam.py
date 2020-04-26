@@ -14,12 +14,6 @@ from __future__ import division
 
 import torch
 
-try:
-    import ipdb
-except ImportError:
-    pass
-
-
 class Beam(object):
     def __init__(self, size, cuda=False):
 
