@@ -130,7 +130,7 @@ def add_train_options(parser):
                         help="""evaluate on dev per x batches.""")
     parser.add_argument('-halve_lr_bad_count', type=int, default=4,
                         help="""evaluate on dev per x batches.""")
-    parser.add_argument('-min_lr', type=int, default=1e-6)
+    parser.add_argument('-min_lr', type=float, default=1e-6)
 
     # pretrained word vectors
     parser.add_argument('-pre_word_vecs_enc',
