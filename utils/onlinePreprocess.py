@@ -194,19 +194,17 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts, pointer_gen=False):
     return src, tgt, (src_extend_vocab, tgt_extend_vocab, src_oovs_list)  # list(Tensor)
 
 
-def prepare_data_online(train_src, src_vocab, train_tgt, tgt_vocab, pointer_gen):
-    dicts = {}
-    dicts['src'] = initVocabulary('source', [train_src], src_vocab, 0)
-    dicts['tgt'] = initVocabulary('target', [train_tgt], tgt_vocab, 0)
+def prepare_data_online(opt):
+    train_src, src_vocab, train_tgt, tgt_vocab, pointer_gen = opt.train_src, opt.src_vocab, opt.train_tgt, opt.tgt_vocab, opt.pointer_gen
+    vocab_dicts = {}
+    vocab_dicts['src'] = initVocabulary('source', [train_src], src_vocab, 0)
+    vocab_dicts['tgt'] = initVocabulary('target', [train_tgt], tgt_vocab, 0)
 
     logger.info('Preparing training ...')
-    train = {}
-    train['src'], train['tgt'], (train['src_extend_vocab'], train['tgt_extend_vocab'], train['src_oovs_list'])\
-        = makeData(train_src, train_tgt, dicts['src'], dicts['tgt'], pointer_gen)
-
+    train_data = {}
+    train_data['src'], train_data['tgt'], (train_data['src_extend_vocab'], train_data['tgt_extend_vocab'], train_data['src_oovs_list'])\
+        = makeData(train_src, train_tgt, vocab_dicts['src'], vocab_dicts['tgt'], pointer_gen)
     # enc_input_extend_vocab: source带有oov的id，oov相对于source_vocab
     # tgt_extend_vocab: tgt带有oov的id，oov相对于tgt_vocab
     # src_oovs_list： source里不再词典里的词
-    dataset = {'dicts': dicts,
-               'train': train,}
-    return dataset
+    return train_data, vocab_dicts

@@ -1,17 +1,5 @@
 from __future__ import division
 import utils.Constants as Constants
-# Class for managing the internals of the beam search process.
-#
-#
-#         hyp1#-hyp1---hyp1 -hyp1
-#                 \             /
-#         hyp2 \-hyp2 /-hyp2#hyp2
-#                               /      \
-#         hyp3#-hyp3---hyp3 -hyp3
-#         ========================
-#
-# Takes care of beams, back pointers, and scores.
-
 import torch
 
 class Beam(object):

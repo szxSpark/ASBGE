@@ -119,6 +119,8 @@ def add_train_options(parser):
     parser.add_argument('-start_decay_at', type=int, default=8,
                         help="""Start decaying every epoch after and including this
                         epoch""")
+    parser.add_argument('-decay_interval', type=int, default=1)
+
     parser.add_argument('-start_eval_batch', type=int, default=15000,
                         help="""evaluate on dev per x batches.""")
     parser.add_argument('-eval_per_batch', type=int, default=1000,
