@@ -43,20 +43,35 @@ class Optim(object):
         self.bad_count = 0
         self.decay_indicator= 2
         self.min_lr = min_lr
+        self.start_decay = False
+        self.last_score = None
+
 
     def step(self):
         # Compute gradients norm.
         if self.max_grad_norm:
             clip_grad_norm_(self.params, self.max_grad_norm)
         self.optimizer.step()
-        if self.max_weight_value:
-            for p in self.params:
-                p.data.clamp_(0 - self.max_weight_value, self.max_weight_value)
+        # if self.max_weight_value:
+        #     for p in self.params:
+        #         p.data.clamp_(0 - self.max_weight_value, self.max_weight_value)
         # self.scheduler.step()
 
-    def updateLearningRate(self, ppl, epoch):
-        if ppl[self.decay_indicator-1] > self.best_metric[self.decay_indicator-1]:
-            self.best_metric = ppl
+    def updateLearningRate(self, score, epoch):
+        if self.start_decay_at is not None and epoch >= self.start_decay_at:
+            self.start_decay = True
+
+        if self.start_decay:
+            self.lr = self.lr * self.lr_decay
+            print("Decaying learning rate to %g" % self.lr)
+
+        self.last_score = score
+        for p in self.optimizer.param_groups:
+            p['lr'] = self.lr
+
+    def updateLearningRate_bak(self, score, epoch):
+        if score[self.decay_indicator-1] > self.best_metric[self.decay_indicator-1]:
+            self.best_metric = score
             self.bad_count = 0
         else:
             self.bad_count += 1

@@ -7,7 +7,7 @@ from models import Encoder, Decoder, DecInit, NMTModel, Beam
 from utils.Dataset import Dataset
 
 class Translator(object):
-    def __init__(self, opt, model=None, dataset=None):
+    def __init__(self, opt, model=None, vocab_dicts=None):
         self.opt = opt
 
         if model is None:
@@ -42,8 +42,8 @@ class Translator(object):
 
             model.generator = generator
         else:
-            self.src_dict = dataset['dicts']['src']
-            self.tgt_dict = dataset['dicts']['tgt']
+            self.src_dict = vocab_dicts['src']
+            self.tgt_dict = vocab_dicts['tgt']
 
             self.enc_rnn_size = opt.enc_rnn_size
             self.dec_rnn_size = opt.dec_rnn_size

@@ -2,7 +2,7 @@ from __future__ import division
 import argparse
 import torch
 import torch.nn as nn
-from models import Optim, NMTModel, Encoder, Decoder, DecInit
+from models import Optim, NMTModel, Encoder, Decoder, DecInit, Generator
 from torch import cuda
 import math
 import time
@@ -10,13 +10,17 @@ import logging
 import os
 from PyRouge.Rouge import Rouge
 import xargs
-# os.environ['CUDA_LAUNCH_BLOCKING'] = "0"
+from tqdm import tqdm
+from utils import onlinePreprocess
+from utils.onlinePreprocess import prepare_data_online
+import utils.Constants as Constants
+from utils.Translator import Translator
+from utils.Dataset import Dataset
 
 parser = argparse.ArgumentParser(description='train.py')
 xargs.add_data_options(parser)
 xargs.add_model_options(parser)
 xargs.add_train_options(parser)
-
 opt = parser.parse_args()
 
 logging.basicConfig(format='%(asctime)s [%(levelname)s:%(name)s]: %(message)s', level=logging.INFO)
@@ -28,7 +32,6 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)-'
                                             '5.5s:%(name)s] %(message)s'))
 logging.root.addHandler(file_handler)
 logger = logging.getLogger(__name__)
-
 logger.info('My PID is {0}'.format(os.getpid()))
 logger.info(opt)
 
@@ -46,23 +49,143 @@ if opt.gpus:
 logger.info('My seed is {0}'.format(torch.initial_seed()))
 logger.info('My cuda seed is {0}'.format(torch.cuda.initial_seed()))
 
-from utils import onlinePreprocess
-from utils.onlinePreprocess import prepare_data_online
-import utils.Constants as Constants
-from utils.Translator import Translator
-from utils.Dataset import Dataset
+def load_train_data():
+    onlinePreprocess.seq_length = opt.max_sent_length_source  # 训练的截断
+    onlinePreprocess.shuffle = 1 if opt.process_shuffle else 0
+    train_data, vocab_dicts = prepare_data_online(opt)
+    trainData = Dataset(train_data, opt.batch_size, opt.gpus, pointer_gen=opt.pointer_gen, is_coverage=opt.is_coverage)
+    logger.info(' * vocabulary size. source = %d; target = %d' %
+                (vocab_dicts['src'].size(), vocab_dicts['tgt'].size()))
+    logger.info(' * number of training sentences. %d' %
+                len(trainData['src']))
+    return trainData, vocab_dicts
 
+def load_dev_data(translator, src_file, tgt_file):
+    def addPair(f1, f2):
+        for x, y1 in zip(f1, f2):
+            yield (x, y1)
+        yield (None, None)
+    dataset, raw = [], []
+    srcF = open(src_file, encoding='utf-8')
+    tgtF = open(tgt_file, encoding='utf-8')
+    src_batch, tgt_batch = [], []
+    for line, tgt in addPair(srcF, tgtF):
+        if (line is not None) and (tgt is not None):
+            src_tokens = line.strip().split(' ')
+            # src_tokens = src_tokens[:2000]  # TODO
+            src_batch += [src_tokens]
+            tgt_tokens = tgt.strip().split(' ')
+            tgt_batch += [tgt_tokens]
 
-def NMTCriterion(vocabSize):
+            if len(src_batch) < opt.batch_size:
+                continue
+        else:
+            # at the end of file, check last batch
+            if len(src_batch) == 0:
+                break
+        data = translator.buildData(src_batch, tgt_batch)
+        dataset.append(data)
+        raw.append((src_batch, tgt_batch))
+        src_batch, tgt_batch = [], []
+    srcF.close()
+    tgtF.close()
+    return (dataset, raw)
+
+def bulid_model(vocab_dicts):
+    logger.info(' * maximum batch size. %d' % opt.batch_size)
+    logger.info('Building model...')
+
+    encoder = Encoder(opt, vocab_dicts['src'])
+    decoder = Decoder(opt, vocab_dicts['tgt'])
+    if opt.share_embedding:
+        decoder.word_lut = encoder.word_lut
+    decIniter = DecInit(opt)
+    model = NMTModel(encoder, decoder, decIniter)
+
+    if opt.pointer_gen:
+        generator = Generator(opt, vocab_dicts)  # TODO 考虑加dropout
+    else:
+        generator = nn.Sequential(
+            nn.Linear(opt.dec_rnn_size // opt.maxout_pool_size, vocab_dicts['tgt'].size()),
+            # nn.Linear(opt.word_vec_size, dicts['tgt'].size()),  # transformer
+            nn.LogSoftmax(dim=-1)
+        )
+    if len(opt.gpus) >= 1:
+        model.cuda()
+        generator.cuda()
+    else:
+        model.cpu()
+        generator.cpu()
+    model.generator = generator
+    logger.info("model.encoder.word_lut: {}".format(id(model.encoder.word_lut)))
+    logger.info("model.decoder.word_lut: {}".format(id(model.decoder.word_lut)))
+    logger.info("embedding share: {}".format(model.encoder.word_lut is model.decoder.word_lut))
+    logger.info(repr(model))
+    param_count = sum([param.view(-1).size()[0] for param in model.parameters()])
+    logger.info('total number of parameters: %d\n\n' % param_count)
+
+    init_params(model)
+    optim = build_optim(model)
+
+    # # 断点重连
+    # logger.info(opt.checkpoint_file)
+    #
+    # if opt.checkpoint_file is not None:
+    #     logger.info("load {}".format(opt.checkpoint_file))
+    #     checkpoint = torch.load(opt.checkpoint_file)
+    #     for k, v in checkpoint['generator'].items():
+    #         checkpoint['model']["generator."+k] = v
+    #     model.load_state_dict(checkpoint['model'])
+    #     optim = checkpoint['optim']
+    #     opt.start_epoch += checkpoint['epoch']
+
+    return model, optim
+
+def init_params(model):
+    logger.info("xavier_normal init")
+    for pr_name, p in model.named_parameters():
+        logger.info(pr_name)
+        if p.dim() == 1:
+            p.data.normal_(0, math.sqrt(6 / (1 + p.size(0))))
+        else:
+            nn.init.xavier_normal_(p, math.sqrt(3))
+    model.encoder.load_pretrained_vectors(opt)
+    model.decoder.load_pretrained_vectors(opt)
+    # logger.info("load lm rnn")
+    # encoder.load_lm_rnn(opt)
+
+def build_optim(model):
+    optim = Optim(
+        opt.optim, opt.learning_rate,
+        max_grad_norm=opt.max_grad_norm,
+        min_lr=opt.min_lr,
+        max_weight_value=opt.max_weight_value,
+        lr_decay=opt.learning_rate_decay,
+        start_decay_at=opt.start_decay_at,
+        decay_bad_count=opt.halve_lr_bad_count
+    )
+    # ---- 不同学习率
+    small_lr_layers_id = list(map(id, model.encoder.word_lut.parameters())) + \
+                         list(map(id, model.encoder.rnn.parameters()))
+    large_lr_layers = list(filter(lambda p: id(p) not in small_lr_layers_id, model.parameters()))
+    small_lr_layers = list(filter(lambda p: id(p) in small_lr_layers_id, model.parameters()))
+    params = [
+        {"params": large_lr_layers},
+        {"params": small_lr_layers, "lr": 1e-3}
+    ]
+    # params = model.parameters()
+    optim.set_parameters(params, model.parameters())
+    return optim
+
+def build_loss(vocabSize):
     weight = torch.ones(vocabSize)
     weight[Constants.PAD] = 0
-    crit = nn.NLLLoss(weight, reduction='sum')
+    loss = nn.NLLLoss(weight, reduction='sum')
     if opt.gpus:
-        crit.cuda()
-    return crit
+        loss.cuda()
+    return loss
 
-
-def loss_function(g_outputs, g_targets, generator, crit, g_p_gens, g_attn, enc_batch_extend_vocab, extra_zeros, coverage_losses):
+def compute_loss(g_outputs, g_targets, generator, crit, g_p_gens, g_attn, enc_batch_extend_vocab, extra_zeros, coverage_losses):
     # g_outputs: (decL-1, B, H)
     # g_targets: (decL-1, B)
     # g_p_gens:  (decL-1, B, 1)
@@ -92,43 +215,34 @@ def loss_function(g_outputs, g_targets, generator, crit, g_p_gens, g_attn, enc_b
         report_loss = total_loss.item()
         return total_loss, report_loss, 0
 
-def addPair(f1, f2):
-    for x, y1 in zip(f1, f2):
-        yield (x, y1)
-    yield (None, None)
-
-def load_dev_data(translator, src_file, tgt_file):
-    dataset, raw = [], []
-    srcF = open(src_file, encoding='utf-8')
-    tgtF = open(tgt_file, encoding='utf-8')
-    src_batch, tgt_batch = [], []
-    for line, tgt in addPair(srcF, tgtF):
-        if (line is not None) and (tgt is not None):
-            src_tokens = line.strip().split(' ')
-            # src_tokens = src_tokens[:2000]  # TODO
-            src_batch += [src_tokens]
-            tgt_tokens = tgt.strip().split(' ')
-            tgt_batch += [tgt_tokens]
-
-            if len(src_batch) < opt.batch_size:
-                continue
-        else:
-            # at the end of file, check last batch
-            if len(src_batch) == 0:
-                break
-        data = translator.buildData(src_batch, tgt_batch)
-        dataset.append(data)
-        raw.append((src_batch, tgt_batch))
-        src_batch, tgt_batch = [], []
-    srcF.close()
-    tgtF.close()
-    return (dataset, raw)
+def save_model(model, optim, vocab_dicts, epoch, metric=None):
+    model_state_dict = model.module.state_dict() if len(opt.gpus) > 1 else model.state_dict()
+    model_state_dict = {k: v for k, v in model_state_dict.items() if 'generator' not in k}
+    generator_state_dict = model.generator.module.state_dict() if len(
+        opt.gpus) > 1 else model.generator.state_dict()
+    checkpoint = {
+        'model': model_state_dict,
+        'generator': generator_state_dict,
+        'dicts': vocab_dicts,
+        'opt': opt,
+        'epoch': epoch,
+        'optim': optim
+    }
+    save_model_path = 'model'
+    if opt.save_path:
+        if not os.path.exists(opt.save_path):
+            os.makedirs(opt.save_path)
+        save_model_path = opt.save_path + os.path.sep + save_model_path
+    if metric is not None:
+        torch.save(checkpoint,
+                   '{0}_devRouge_{1}_{2}_e{3}.pt'.format(save_model_path, round(metric[0], 4), round(metric[1], 4),
+                                                         epoch))
+    else:
+        torch.save(checkpoint, '{0}_e{1}.pt'.format(save_model_path, epoch))
 
 evalModelCount = 0
 totalBatchCount = 0
 rouge_calculator = Rouge.Rouge()
-
-from tqdm import tqdm
 
 def evalModel(translator, evalData):
     global evalModelCount
@@ -203,42 +317,12 @@ def evalModel(translator, evalData):
                 of.write(p + '\n')
         return scores['rouge-1']['f'][0], scores['rouge-2']['f'][0]
 
-def trainModel(model, translator, trainData, validData, dataset, optim):
-    logger.info(model)
+def trainModel(model, translator, trainData, validData, vocab_dicts, optim):
     model.train()
-    # logger.warning("Set model to {0} mode".format('train' if model.training else 'eval'))
-
-    # define criterion of each GPU
-    criterion = NMTCriterion(dataset['dicts']['tgt'].size())
-
-    def saveModel(metric=None):
-        model_state_dict = model.module.state_dict() if len(opt.gpus) > 1 else model.state_dict()
-        model_state_dict = {k: v for k, v in model_state_dict.items() if 'generator' not in k}
-        generator_state_dict = model.generator.module.state_dict() if len(
-            opt.gpus) > 1 else model.generator.state_dict()
-        #  (4) drop a checkpoint
-        checkpoint = {
-            'model': model_state_dict,
-            'generator': generator_state_dict,
-            'dicts': dataset['dicts'],
-            'opt': opt,
-            'epoch': epoch,
-            'optim': optim
-        }
-        save_model_path = 'model'
-        if opt.save_path:
-            if not os.path.exists(opt.save_path):
-                os.makedirs(opt.save_path)
-            save_model_path = opt.save_path + os.path.sep + save_model_path
-        if metric is not None:
-            torch.save(checkpoint,
-                       '{0}_devRouge_{1}_{2}_e{3}.pt'.format(save_model_path, round(metric[0], 4), round(metric[1], 4),
-                                                             epoch))
-        else:
-            torch.save(checkpoint, '{0}_e{1}.pt'.format(save_model_path, epoch))
+    logger.warning("Set model to {0} mode".format('train' if model.training else 'eval'))
+    criterion = build_loss(vocab_dicts['tgt'].size())
 
     def trainEpoch(epoch):
-
         if opt.extra_shuffle and epoch > opt.curriculum:
             logger.info('Shuffling...')
             trainData.shuffle()
@@ -282,7 +366,7 @@ def trainModel(model, translator, trainData, validData, dataset, optim):
 
             enc_batch_extend_vocab = batch[0][2]
             extra_zeros = batch[0][3]
-            loss, res_loss, _ = loss_function(g_outputs, targets, model.generator, criterion, g_p_gens, g_attn,
+            loss, res_loss, _ = compute_loss(g_outputs, targets, model.generator, criterion, g_p_gens, g_attn,
                                               enc_batch_extend_vocab, extra_zeros, coverage_losses)
             loss.backward()
             optim.step()
@@ -330,175 +414,49 @@ def trainModel(model, translator, trainData, validData, dataset, optim):
                 assert optim.decay_indicator == 2
                 if opt.is_save:
                     if rouge_2 >= optim.best_metric[optim.decay_indicator - 1]:
-                        saveModel([rouge_1, rouge_2])
-                optim.updateLearningRate([rouge_1, rouge_2], epoch)
+                        save_model(model, optim, vocab_dicts, epoch, metric=[rouge_1, rouge_2])
 
         return total_loss / float(total_words)
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         logger.info('')
-        global eeee
-        eeee = epoch
         #  (1) train for one epoch on the training set
         train_loss = trainEpoch(epoch)
         logger.info('Train loss: %g   Learning Rate: %g %g' % (train_loss,
                                                                optim.optimizer.param_groups[0]['lr'],
                                                                optim.optimizer.param_groups[1]['lr']))
         logger.info('Saving checkpoint for epoch {0}...'.format(epoch))
+        optim.updateLearningRate([0, 0], epoch)
         if opt.is_save:
-            saveModel()
+            save_model(model, optim, vocab_dicts, epoch, metric=None)
 
-
-class Generator(nn.Module):
-    def __init__(self, opt, dicts):
-        super(Generator, self).__init__()
-        self.linear = nn.Linear(opt.dec_rnn_size // opt.maxout_pool_size, dicts['tgt'].size())
-        self.sm = nn.Softmax(dim=-1)
-        self.pointer_gen = opt.pointer_gen
-
-    def forward(self, g_outputs, g_p_gens, g_attn, enc_batch_extend_vocab, extra_zeros, is_traing=True):
-        # g_outputs: (decL-1, B, H)
-        # g_p_gens:  (decL-1, B, 1)
-        # g_attn (decL-1, B, sourceL)
-        # enc_batch_extend_vocab  (sourceL, B)
-        # extra_zeros  oovs, B
-        # print("enc_batch_extend_vocab.size()", enc_batch_extend_vocab.size())
-        if extra_zeros is not None:
-            oovs, B = extra_zeros.size()
-            # if not is_traing:
-            #     print(g_outputs.size(), oovs)
-
-            extra_zeros = extra_zeros.permute(1, 0)  # B, oovs
-            B, oovs = extra_zeros.size()
-            extra_zeros = extra_zeros.unsqueeze(0).expand(g_outputs.size(0), B, oovs)  # decL-1, B, oovs
-            extra_zeros = extra_zeros.contiguous()
-            extra_zeros = extra_zeros.view(-1, extra_zeros.size(2))  # decL-1*B, oovs
-            # extra_zeros = torch.zeros((g_outputs.size(0)*g_outputs.size(1), oovs)).cuda()  # decL-1*B, oovs
-
-        enc_batch_extend_vocab = enc_batch_extend_vocab.permute(1, 0)  # B, sourceL
-        B, sourceL = enc_batch_extend_vocab.size()
-        enc_batch_extend_vocab = enc_batch_extend_vocab.unsqueeze(0).expand(g_outputs.size(0), B,
-                                                                            sourceL)  # decL-1, B, sourceL
-        enc_batch_extend_vocab = enc_batch_extend_vocab.contiguous()
-        enc_batch_extend_vocab = enc_batch_extend_vocab.view(-1, enc_batch_extend_vocab.size(2))  # decL-1*B, sourceL
-
-        g_outputs = g_outputs.view(-1, g_outputs.size(2))  # (decL-1*B, H)】
-
-        vocab_dist = self.sm(self.linear(g_outputs))  # (decL-1*B, tgt_size)
-        p_gen = g_p_gens.view(-1, 1)  # (decL-1*B, 1)
-        attn_dist = g_attn.view(-1, g_attn.size(-1))  # (decL-1*B, sourceL)
-
-        vocab_dist_ = p_gen * vocab_dist  # (decL-1*B, tgt_size)
-        attn_dist_ = (1 - p_gen) * attn_dist  # (decL-1*B, sourceL)
-        if extra_zeros is not None:
-            vocab_dist_ = torch.cat([vocab_dist_, extra_zeros], 1)  # (decL-1*B, tgt_size+oovs)
-        final_dist = vocab_dist_.scatter_add(1, enc_batch_extend_vocab, attn_dist_)
-        return final_dist  # (decL-1*B, tgt_size+oovs)
-
+def showAttention(path, s, c, attentions, index):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
+    # Set up figure with colorbar
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    cax = ax.matshow(attentions.numpy(), cmap='bone')
+    fig.colorbar(cax)
+    # Set up axes
+    ax.set_xticklabels([''] + s, rotation=90)
+    ax.set_yticklabels([''] + c)
+    # Show label at every tick
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
+    plt.show()
+    plt.savefig(path + str(index) + '.jpg')
 
 def main():
-    onlinePreprocess.seq_length = opt.max_sent_length_source  # 训练的截断
-    onlinePreprocess.shuffle = 1 if opt.process_shuffle else 0
-
-    dataset = prepare_data_online(opt.train_src, opt.src_vocab, opt.train_tgt, opt.tgt_vocab, opt.pointer_gen)
-
-    trainData = Dataset(dataset['train'], opt.batch_size, opt.gpus, pointer_gen=opt.pointer_gen, is_coverage=opt.is_coverage)
-    dicts = dataset['dicts']
-    logger.info(' * vocabulary size. source = %d; target = %d' %
-                (dicts['src'].size(), dicts['tgt'].size()))
-    logger.info(' * number of training sentences. %d' %
-                len(dataset['train']['src']))
-    logger.info(' * maximum batch size. %d' % opt.batch_size)
-
-    logger.info('Building model...')
-
-    encoder = Encoder(opt, dicts['src'])
-    decoder = Decoder(opt, dicts['tgt'])
-    if opt.share_embedding:
-        decoder.word_lut = encoder.word_lut
-    decIniter = DecInit(opt)
-
-    if opt.pointer_gen:
-        generator = Generator(opt, dicts)  # 考虑加dropout
-    else:
-        generator = nn.Sequential(
-            nn.Linear(opt.dec_rnn_size // opt.maxout_pool_size, dicts['tgt'].size()),
-            # nn.Linear(opt.word_vec_size, dicts['tgt'].size()),  # transformer
-            nn.LogSoftmax(dim=-1)
-        )
-    model = NMTModel(encoder, decoder, decIniter)
-    # model = NMTModel(encoder, decoder)  # transformer
-
-    logger.info("model.encoder.word_lut: {}".format(id(model.encoder.word_lut)))
-    logger.info("model.decoder.word_lut: {}".format(id(model.decoder.word_lut)))
-    logger.info("embedding share: {}".format(model.encoder.word_lut is model.decoder.word_lut))
-
-    model.generator = generator
-    translator = Translator(opt, model, dataset)
-
-    if len(opt.gpus) >= 1:
-        model.cuda()
-        generator.cuda()
-    else:
-        model.cpu()
-        generator.cpu()
-    logger.info("xavier_normal init")
-    for pr_name, p in model.named_parameters():
-        logger.info(pr_name)
-        # p.data.uniform_(-opt.param_init, opt.param_init)
-        if p.dim() == 1:
-            # p.data.zero_()
-            p.data.normal_(0, math.sqrt(6 / (1 + p.size(0))))
-        else:
-            nn.init.xavier_normal_(p, math.sqrt(3))  # TODO 尝试第二个参数不设置
-            # nn.init.xavier_uniform_(p)
-            # nn.init.xavier_uniform_(p, nn.init.calculate_gain('relu'))
-
-    encoder.load_pretrained_vectors(opt)
-    decoder.load_pretrained_vectors(opt)
-    # logger.info("load lm rnn")
-    # encoder.load_lm_rnn(opt)
-
-    optim = Optim(
-        opt.optim, opt.learning_rate,
-        max_grad_norm=opt.max_grad_norm,
-        min_lr=opt.min_lr,
-        max_weight_value=opt.max_weight_value,
-        lr_decay=opt.learning_rate_decay,
-        start_decay_at=opt.start_decay_at,
-        decay_bad_count=opt.halve_lr_bad_count
-    )
-    # ---- 不同学习率
-    small_lr_layers_id = list(map(id, model.encoder.word_lut.parameters())) + \
-                      list(map(id, model.encoder.rnn.parameters()))
-    large_lr_layers = list(filter(lambda p: id(p) not in small_lr_layers_id, model.parameters()))
-    small_lr_layers = list(filter(lambda p: id(p) in small_lr_layers_id, model.parameters()))
-    params = [
-        {"params": large_lr_layers},
-        {"params": small_lr_layers, "lr": 1e-3}
-    ]
-    # params = model.parameters()
-    optim.set_parameters(params, model.parameters())
-
-    # 断点重连
-    logger.info(opt.checkpoint_file)
-
-    if opt.checkpoint_file is not None:
-        logger.info("load {}".format(opt.checkpoint_file))
-        checkpoint = torch.load(opt.checkpoint_file)
-        for k, v in checkpoint['generator'].items():
-            checkpoint['model']["generator."+k] = v
-        model.load_state_dict(checkpoint['model'])
-        optim = checkpoint['optim']
-        opt.start_epoch += checkpoint['epoch']
-
-
+    trainData, vocab_dicts = load_train_data()
+    model, optim = bulid_model(vocab_dicts)
+    translator = Translator(opt, model, vocab_dicts)
     validData = None
     if opt.dev_input_src and opt.dev_ref:
-        validData = load_dev_data(translator, opt.dev_input_src, opt.dev_ref)
-        # 已经分好batch
-        # （Dataset， list((src_batch, tgt_batch)))
-    trainModel(model, translator, trainData, validData, dataset, optim)
+        validData = load_dev_data(translator, opt.dev_input_src, opt.dev_ref) # 已经分好batch Dataset， list((src_batch, tgt_batch)))
+    trainModel(model, translator, trainData, validData, vocab_dicts, optim)
 
 if __name__ == "__main__":
     main()
