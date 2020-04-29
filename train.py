@@ -72,7 +72,7 @@ def load_dev_data(translator, src_file, tgt_file):
     for line, tgt in addPair(srcF, tgtF):
         if (line is not None) and (tgt is not None):
             src_tokens = line.strip().split(' ')
-            # src_tokens = src_tokens[:2000]  # TODO
+            src_tokens = src_tokens[:2000]  # TODO
             src_batch += [src_tokens]
             tgt_tokens = tgt.strip().split(' ')
             tgt_batch += [tgt_tokens]
@@ -415,19 +415,19 @@ def trainModel(model, translator, trainData, validData, vocab_dicts, optim):
                 if opt.is_save:
                     if rouge_2 >= optim.best_metric[optim.decay_indicator - 1]:
                         save_model(model, optim, vocab_dicts, epoch, metric=[rouge_1, rouge_2])
+                optim.updateLearningRate([rouge_1, rouge_2], epoch)
 
         return total_loss / float(total_words)
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
-        logger.info('')
         #  (1) train for one epoch on the training set
         train_loss = trainEpoch(epoch)
         logger.info('Train loss: %g   Learning Rate: %g %g' % (train_loss,
                                                                optim.optimizer.param_groups[0]['lr'],
                                                                optim.optimizer.param_groups[1]['lr']))
         logger.info('Saving checkpoint for epoch {0}...'.format(epoch))
-        if epoch >= opt.start_decay_at and (epoch-opt.start_decay_at) % opt.decay_interval == 0:
-            optim.updateLearningRate([0, 0], epoch)
+        # if epoch >= opt.start_decay_at and (epoch-opt.start_decay_at) % opt.decay_interval == 0:
+        #     optim.updateLearningRate([0, 0], epoch)
         if opt.is_save:
             save_model(model, optim, vocab_dicts, epoch, metric=None)
 

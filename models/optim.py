@@ -52,12 +52,12 @@ class Optim(object):
         if self.max_grad_norm:
             clip_grad_norm_(self.params, self.max_grad_norm)
         self.optimizer.step()
-        # if self.max_weight_value:
-        #     for p in self.params:
-        #         p.data.clamp_(0 - self.max_weight_value, self.max_weight_value)
+        if self.max_weight_value:
+            for p in self.params:
+                p.data.clamp_(0 - self.max_weight_value, self.max_weight_value)
         # self.scheduler.step()
 
-    def updateLearningRate(self, score, epoch):
+    def updateLearningRate_epoch_decay(self, score, epoch):
         if self.start_decay_at is not None and epoch >= self.start_decay_at:
             self.start_decay = True
 
@@ -69,17 +69,18 @@ class Optim(object):
         for p in self.optimizer.param_groups:
             p['lr'] = self.lr
 
-    def updateLearningRate_bak(self, score, epoch):
+    def updateLearningRate(self, score, epoch):
         if score[self.decay_indicator-1] > self.best_metric[self.decay_indicator-1]:
             self.best_metric = score
             self.bad_count = 0
         else:
             self.bad_count += 1
 
-        if self.bad_count >= self.decay_bad_count and self.lr * self.lr_decay >= self.min_lr:
+        # if self.bad_count >= self.decay_bad_count and self.lr * self.lr_decay >= self.min_lr:
+        if self.bad_count >= self.decay_bad_count and self.lr >= 1e-6:
             self.lr = self.lr * self.lr_decay
             for p in self.optimizer.param_groups:
-                if p['lr'] >= 1e-5:
+                if p['lr'] >= 1e-6:
                     p['lr'] *= self.lr_decay
                 logger.info("Decaying learning rate to %g" % p['lr'])
             self.bad_count = 0
