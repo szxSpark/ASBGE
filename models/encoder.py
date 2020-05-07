@@ -90,7 +90,7 @@ class Encoder(nn.Module):
         u = F.tanh(self.context_proj(outputs))  # B, L, 2*H
         # attention = context_para(u).squeeze()  # B, L
         attention = torch.matmul(u, self.context_para).squeeze()  # B,L,2*H   2*H, 1
-        attention = F.softmax(attention, dim=0)  # B, L
+        attention = F.softmax(attention, dim=1)  # B, L
         sentence_vector = torch.bmm(attention.unsqueeze(dim=1), outputs).squeeze(dim=1)  # B, 2*H
         outputs = outputs.permute(1, 0, 2)  # L, B, 2*H
         # outputs = self.dropout(outputs)  # dropout
